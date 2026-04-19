@@ -10,7 +10,6 @@ use config::V0kConfig;
 use executor::PreparedCommand;
 use std::env;
 use std::io::{self, Write};
-use wrappers::Wrapper;
 
 #[derive(Parser)]
 #[command(name = "v0k", version, about = "Semantic-level intelligent CLI agent")]
@@ -68,34 +67,20 @@ async fn handle_any_wrapper(
     program: &str,
     args: Vec<String>,
 ) -> Option<Result<(), String>> {
-    match program {
-        cmd if cmd == wrappers::curl::CurlWrapper::name() => {
-            Some(handle_wrapper::<wrappers::curl::CurlWrapper>(config, args).await)
-        }
-        cmd if cmd == wrappers::git::GitWrapper::name() => {
-            Some(handle_wrapper::<wrappers::git::GitWrapper>(config, args).await)
-        }
-        cmd if cmd == wrappers::docker::DockerWrapper::name() => {
-            Some(handle_wrapper::<wrappers::docker::DockerWrapper>(config, args).await)
-        }
-        cmd if cmd == wrappers::tar::TarWrapper::name() => {
-            Some(handle_wrapper::<wrappers::tar::TarWrapper>(config, args).await)
-        }
-        cmd if cmd == wrappers::find::FindWrapper::name() => {
-            Some(handle_wrapper::<wrappers::find::FindWrapper>(config, args).await)
-        }
-        cmd if cmd == wrappers::ffmpeg::FfmpegWrapper::name() => {
-            Some(handle_wrapper::<wrappers::ffmpeg::FfmpegWrapper>(config, args).await)
-        }
-        _ => None,
-    }
+    let help_arg = wrappers::find_wrapper(program)?;
+    Some(handle_wrapper(config, program, help_arg, args).await)
 }
 
 /// Generic handler for any smart wrapper supporting AI fallback semantics:
 /// Forwards parsing of the command parameters to the AI completely.
-async fn handle_wrapper<W: Wrapper>(config: &V0kConfig, args: Vec<String>) -> Result<(), String> {
+async fn handle_wrapper(
+    config: &V0kConfig,
+    name: &str,
+    help_arg: &str,
+    args: Vec<String>,
+) -> Result<(), String> {
     if args.is_empty() {
-        return Err(format!("no arguments provided for {}.", W::name()));
+        return Err(format!("no arguments provided for {}.", name));
     }
 
     if !config.has_ai() {
@@ -104,9 +89,9 @@ async fn handle_wrapper<W: Wrapper>(config: &V0kConfig, args: Vec<String>) -> Re
             .to_string());
     }
 
-    let user_input = format!("{} {}", W::name(), args.join(" "));
-    let brain_resp =
-        brain::infer_with_extension(config, &user_input, W::ai_prompt_extension()).await?;
+    let user_input = format!("{} {}", name, args.join(" "));
+    let extension = wrappers::ai_prompt_extension(name, help_arg);
+    let brain_resp = brain::infer_with_extension(config, &user_input, extension).await?;
     execute_brain_response(brain_resp).await
 }
 
