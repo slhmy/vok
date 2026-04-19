@@ -1,26 +1,42 @@
-/// Detect if running on Windows shell environment
-pub fn is_windows_shell() -> bool {
-    // First check if we're actually on Windows OS
+/// Shell type enum for platform-specific behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum ShellType {
+    Unix,       // sh/bash/zsh on Linux/macOS
+    PowerShell, // Windows PowerShell (5.x) or pwsh (7.x)
+    CmdExe,     // Windows cmd.exe
+}
+
+/// Detect the current shell type
+pub fn detect_shell_type() -> ShellType {
     #[cfg(not(windows))]
-    return false;
+    return ShellType::Unix;
 
     #[cfg(windows)]
     {
-        // PowerShell sets PSModulePath
-        if std::env::var("PSModulePath").is_ok() {
-            return true;
+        // PowerShell sets PSModulePath with Windows-specific paths
+        if let Ok(path) = std::env::var("PSModulePath") {
+            // PowerShell module path contains WindowsPowerShell or PowerShell
+            if path.contains("WindowsPowerShell") || path.contains("PowerShell\\") {
+                return ShellType::PowerShell;
+            }
         }
         // cmd.exe sets COMSPEC
         if std::env::var("COMSPEC").is_ok() {
-            return true;
+            return ShellType::CmdExe;
         }
-        false
+        ShellType::CmdExe // default on Windows
     }
 }
 
+/// Detect if running on Windows shell environment (legacy compatibility)
+#[allow(dead_code)]
+pub fn is_windows_shell() -> bool {
+    detect_shell_type() != ShellType::Unix
+}
+
 /// Unix wrapper configs: (name, help_arg)
-#[allow(clippy::redundant_static_lifetimes)]
-pub const UNIX_WRAPPERS: &[(&'static str, &'static str)] = &[
+pub const UNIX_WRAPPERS: &[(&str, &str)] = &[
     ("curl", "--help"),
     ("git", "--help"),
     ("docker", "--help"),
@@ -29,23 +45,40 @@ pub const UNIX_WRAPPERS: &[(&'static str, &'static str)] = &[
     ("ffmpeg", "-help"),
 ];
 
-/// Windows wrapper configs: (name, help_arg)
-#[allow(clippy::redundant_static_lifetimes)]
-pub const WINDOWS_WRAPPERS: &[(&'static str, &'static str)] = &[
+/// PowerShell wrapper configs: (name, help_arg)
+/// PowerShell uses -? or -Help for cmdlets, --help for external tools
+pub const POWERSHELL_WRAPPERS: &[(&str, &str)] = &[
+    // PowerShell cmdlets
+    ("Get-ChildItem", "-?"),
+    ("Get-Content", "-?"),
+    ("Set-Content", "-?"),
+    ("Select-String", "-?"),
+    ("Remove-Item", "-?"),
+    ("New-Item", "-?"),
+    ("Copy-Item", "-?"),
+    ("Move-Item", "-?"),
+    // External tools that work in PowerShell
+    ("git", "--help"),
+    ("docker", "--help"),
+    ("curl", "--help"),
+    ("ffmpeg", "-help"),
+];
+
+/// cmd.exe wrapper configs: (name, help_arg)
+pub const CMDEXE_WRAPPERS: &[(&str, &str)] = &[
     ("curl", "--help"),
     ("git", "--help"),
     ("docker", "--help"),
-    ("tar", "--help"),
-    ("find", "/?"),
+    // Note: Windows 'find' is text search (like grep), NOT Unix find
     ("ffmpeg", "-help"),
 ];
 
 /// Get the appropriate wrapper configs for current shell
 pub fn get_wrapper_configs() -> &'static [(&'static str, &'static str)] {
-    if is_windows_shell() {
-        WINDOWS_WRAPPERS
-    } else {
-        UNIX_WRAPPERS
+    match detect_shell_type() {
+        ShellType::Unix => UNIX_WRAPPERS,
+        ShellType::PowerShell => POWERSHELL_WRAPPERS,
+        ShellType::CmdExe => CMDEXE_WRAPPERS,
     }
 }
 

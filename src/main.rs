@@ -10,6 +10,7 @@ use config::V0kConfig;
 use executor::PreparedCommand;
 use std::env;
 use std::io::{self, Write};
+use wrappers::{detect_shell_type, ShellType};
 
 #[derive(Parser)]
 #[command(name = "v0k", version, about = "Semantic-level intelligent CLI agent")]
@@ -89,9 +90,11 @@ async fn handle_wrapper(config: &V0kConfig, name: &str, args: Vec<String>) -> Re
             .to_string());
     }
 
+    let shell_type = detect_shell_type();
     let user_input = format!("{} {}", name, args.join(" "));
     let extension = wrappers::ai_prompt_extension(name);
-    let brain_resp = brain::infer_with_extension(config, &user_input, extension).await?;
+    let brain_resp =
+        brain::infer_with_extension_for_shell(config, &user_input, extension, shell_type).await?;
     execute_brain_response(config, brain_resp).await
 }
 
@@ -209,19 +212,27 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
         ));
     }
 
+    let shell_type = detect_shell_type();
     let original = prepared_command(program.clone(), args.clone());
 
     if !config.has_ai() {
-        return execute_with_healing(config, original).await;
+        return execute_with_healing(config, original, shell_type).await;
     }
 
     let program_exists = which::which(&program).is_ok();
 
-    let review = match brain::review_command(config, &original.display, program_exists).await {
+    let review = match brain::review_command_for_shell(
+        config,
+        &original.display,
+        program_exists,
+        shell_type,
+    )
+    .await
+    {
         Ok(review) => review,
         Err(err) => {
             eprintln!("warning: AI review failed: {err}");
-            return execute_with_healing(config, original).await;
+            return execute_with_healing(config, original, shell_type).await;
         }
     };
 
@@ -229,7 +240,9 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
     if wrappers::is_known_wrapper(&review.program) {
         let wrapper_hint = wrappers::ai_prompt_extension(&review.program);
         let user_intent = format!("{} {}", review.program, review.args.join(" "));
-        let refined = brain::infer_with_extension(config, &user_intent, wrapper_hint).await?;
+        let refined =
+            brain::infer_with_extension_for_shell(config, &user_intent, wrapper_hint, shell_type)
+                .await?;
         return execute_brain_response(config, refined).await;
     }
 
@@ -258,7 +271,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
                 .to_string(),
         )?;
         if use_rewrite {
-            return execute_with_healing(config, rewritten).await;
+            return execute_with_healing(config, rewritten, shell_type).await;
         }
 
         if which::which(&original.program).is_err() {
@@ -283,7 +296,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
             }
         }
 
-        return execute_with_healing(config, original).await;
+        return execute_with_healing(config, original, shell_type).await;
     }
 
     let needs_confirm = review.confidence < 0.85 || is_dangerous(&original.program, &original.args);
@@ -307,13 +320,17 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
         }
     }
 
-    execute_with_healing(config, original).await
+    execute_with_healing(config, original, shell_type).await
 }
 
 /// Execute a command with self-healing on failure.
 const MAX_HEAL_ATTEMPTS: u32 = 3;
 
-async fn execute_with_healing(config: &V0kConfig, cmd: PreparedCommand) -> Result<(), String> {
+async fn execute_with_healing(
+    config: &V0kConfig,
+    cmd: PreparedCommand,
+    shell_type: ShellType,
+) -> Result<(), String> {
     let mut current_cmd = cmd;
     let mut attempts = 0;
 
@@ -343,13 +360,14 @@ async fn execute_with_healing(config: &V0kConfig, cmd: PreparedCommand) -> Resul
         let wrapper_hint = wrappers::ai_prompt_extension(&current_cmd.program);
 
         // Analyze failure
-        let heal = match brain::analyze_failure(
+        let heal = match brain::analyze_failure_for_shell(
             config,
             &current_cmd.display,
             &captured.stdout,
             &captured.stderr,
             captured.exit_code,
             wrapper_hint.as_deref(),
+            shell_type,
         )
         .await
         {
@@ -396,6 +414,7 @@ async fn execute_brain_response(
     config: &V0kConfig,
     resp: brain::BrainResponse,
 ) -> Result<(), String> {
+    let shell_type = detect_shell_type();
     let cmd = prepared_command(resp.program.clone(), resp.args.clone());
 
     let needs_confirm = resp.confidence < 0.85 || is_dangerous(&resp.program, &resp.args);
@@ -422,7 +441,7 @@ async fn execute_brain_response(
         eprintln!("{}", format!("$ {}", cmd.display).blue());
     }
 
-    execute_with_healing(config, cmd).await
+    execute_with_healing(config, cmd, shell_type).await
 }
 
 /// Check if a command looks dangerous.

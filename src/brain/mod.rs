@@ -1,6 +1,8 @@
 pub mod prompt;
 
 use crate::config::V0kConfig;
+use crate::wrappers::ShellType;
+use prompt::{heal_prompt_for_shell, review_prompt_for_shell, system_prompt_for_shell};
 use serde::{Deserialize, Serialize};
 
 /// Structured response from the AI brain.
@@ -51,8 +53,19 @@ struct MessageContent {
 }
 
 /// Call the AI API to interpret user intent and return a structured command.
+#[allow(dead_code)]
 pub async fn infer(config: &V0kConfig, user_input: &str) -> Result<BrainResponse, String> {
     infer_with_extension(config, user_input, None).await
+}
+
+/// Call the AI API with shell context for command inference.
+#[allow(dead_code)]
+pub async fn infer_for_shell(
+    config: &V0kConfig,
+    user_input: &str,
+    shell_type: ShellType,
+) -> Result<BrainResponse, String> {
+    infer_with_extension_for_shell(config, user_input, None, shell_type).await
 }
 
 /// Call the AI API with an optional prompt extension for command-specific guidance.
@@ -61,7 +74,17 @@ pub async fn infer_with_extension(
     user_input: &str,
     prompt_extension: Option<String>,
 ) -> Result<BrainResponse, String> {
-    let mut system_prompt = prompt::system_prompt();
+    infer_with_extension_for_shell(config, user_input, prompt_extension, ShellType::Unix).await
+}
+
+/// Call the AI API with extension and shell context for command inference.
+pub async fn infer_with_extension_for_shell(
+    config: &V0kConfig,
+    user_input: &str,
+    prompt_extension: Option<String>,
+    shell_type: ShellType,
+) -> Result<BrainResponse, String> {
+    let mut system_prompt = system_prompt_for_shell(shell_type);
     if let Some(extension) = prompt_extension {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&extension);
@@ -71,10 +94,21 @@ pub async fn infer_with_extension(
 }
 
 /// Review an already-formed command and optionally suggest a safer rewrite.
+#[allow(dead_code)]
 pub async fn review_command(
     config: &V0kConfig,
     command: &str,
     exists_in_path: bool,
+) -> Result<BrainResponse, String> {
+    review_command_for_shell(config, command, exists_in_path, ShellType::Unix).await
+}
+
+/// Review a command with shell context.
+pub async fn review_command_for_shell(
+    config: &V0kConfig,
+    command: &str,
+    exists_in_path: bool,
+    shell_type: ShellType,
 ) -> Result<BrainResponse, String> {
     #[derive(Serialize)]
     struct ReviewInput<'a> {
@@ -88,10 +122,11 @@ pub async fn review_command(
     })
     .map_err(|e| format!("failed to serialize review input: {e}"))?;
 
-    run_chat_completion(config, prompt::review_prompt(), review_input).await
+    run_chat_completion(config, review_prompt_for_shell(shell_type), review_input).await
 }
 
 /// Analyze a failed command and suggest a fix if recoverable.
+#[allow(dead_code)]
 pub async fn analyze_failure(
     config: &V0kConfig,
     command: &str,
@@ -99,6 +134,28 @@ pub async fn analyze_failure(
     stderr: &str,
     exit_code: i32,
     wrapper_hint: Option<&str>,
+) -> Result<HealResponse, String> {
+    analyze_failure_for_shell(
+        config,
+        command,
+        stdout,
+        stderr,
+        exit_code,
+        wrapper_hint,
+        ShellType::Unix,
+    )
+    .await
+}
+
+/// Analyze a failed command with shell context.
+pub async fn analyze_failure_for_shell(
+    config: &V0kConfig,
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    wrapper_hint: Option<&str>,
+    shell_type: ShellType,
 ) -> Result<HealResponse, String> {
     #[derive(Serialize)]
     struct FailureInput<'a> {
@@ -119,12 +176,13 @@ pub async fn analyze_failure(
     })
     .map_err(|e| format!("failed to serialize failure input: {e}"))?;
 
-    run_heal_completion(config, input).await
+    run_heal_completion(config, input, shell_type).await
 }
 
 async fn run_heal_completion(
     config: &V0kConfig,
     user_input: String,
+    shell_type: ShellType,
 ) -> Result<HealResponse, String> {
     let api_key = config.api_key.as_ref().ok_or("no API key configured")?;
 
@@ -135,7 +193,7 @@ async fn run_heal_completion(
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: prompt::heal_prompt(),
+                content: heal_prompt_for_shell(shell_type),
             },
             Message {
                 role: "user".to_string(),

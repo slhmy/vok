@@ -1,3 +1,4 @@
+use crate::wrappers::{detect_shell_type, ShellType};
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -20,10 +21,10 @@ pub struct ExecutionResult {
 
 /// Execute a prepared command, printing the resolved invocation and streaming output.
 pub async fn execute(cmd: PreparedCommand) -> Result<(), String> {
-    let (shell, arg) = if cfg!(target_os = "windows") {
-        ("cmd", "/C")
-    } else {
-        ("sh", "-c")
+    let (shell, arg) = match detect_shell_type() {
+        ShellType::PowerShell => ("powershell", "-Command"),
+        ShellType::CmdExe => ("cmd", "/C"),
+        ShellType::Unix => ("sh", "-c"),
     };
 
     let mut child = Command::new(shell)
@@ -50,10 +51,10 @@ pub async fn execute(cmd: PreparedCommand) -> Result<(), String> {
 
 /// Execute a command with output capture (for failure analysis).
 pub async fn execute_captured(cmd: PreparedCommand) -> ExecutionResult {
-    let (shell, arg) = if cfg!(target_os = "windows") {
-        ("cmd", "/C")
-    } else {
-        ("sh", "-c")
+    let (shell, arg) = match detect_shell_type() {
+        ShellType::PowerShell => ("powershell", "-Command"),
+        ShellType::CmdExe => ("cmd", "/C"),
+        ShellType::Unix => ("sh", "-c"),
     };
 
     let output = Command::new(shell).arg(arg).arg(&cmd.display).output();
