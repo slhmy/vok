@@ -67,18 +67,18 @@ async fn handle_any_wrapper(
     program: &str,
     args: Vec<String>,
 ) -> Option<Result<(), String>> {
-    let help_arg = wrappers::find_wrapper(program)?;
-    Some(handle_wrapper(config, program, help_arg, args).await)
+    // Check if command exists first
+    if which::which(program).is_err() {
+        return None;
+    }
+
+    wrappers::get_help_arg(program)?;
+    Some(handle_wrapper(config, program, args).await)
 }
 
 /// Generic handler for any smart wrapper supporting AI fallback semantics:
 /// Forwards parsing of the command parameters to the AI completely.
-async fn handle_wrapper(
-    config: &V0kConfig,
-    name: &str,
-    help_arg: &str,
-    args: Vec<String>,
-) -> Result<(), String> {
+async fn handle_wrapper(config: &V0kConfig, name: &str, args: Vec<String>) -> Result<(), String> {
     if args.is_empty() {
         return Err(format!("no arguments provided for {}.", name));
     }
@@ -90,7 +90,7 @@ async fn handle_wrapper(
     }
 
     let user_input = format!("{} {}", name, args.join(" "));
-    let extension = wrappers::ai_prompt_extension(name, help_arg);
+    let extension = wrappers::ai_prompt_extension(name);
     let brain_resp = brain::infer_with_extension(config, &user_input, extension).await?;
     execute_brain_response(brain_resp).await
 }

@@ -1,5 +1,19 @@
-/// Wrapper configurations: (command name, help argument)
-pub const WRAPPER_CONFIGS: &[(&str, &str)] = &[
+/// Detect if running on Windows shell environment
+pub fn is_windows_shell() -> bool {
+    // PowerShell sets PSModulePath
+    if std::env::var("PSModulePath").is_ok() {
+        return true;
+    }
+    // cmd.exe sets COMSPEC
+    if std::env::var("COMSPEC").is_ok() {
+        return true;
+    }
+    false
+}
+
+/// Unix wrapper configs: (name, help_arg)
+#[allow(clippy::redundant_static_lifetimes)]
+pub const UNIX_WRAPPERS: &[(&'static str, &'static str)] = &[
     ("curl", "--help"),
     ("git", "--help"),
     ("docker", "--help"),
@@ -8,21 +22,43 @@ pub const WRAPPER_CONFIGS: &[(&str, &str)] = &[
     ("ffmpeg", "-help"),
 ];
 
-/// Find wrapper config by command name, returns help_arg
-pub fn find_wrapper(cmd: &str) -> Option<&'static str> {
-    WRAPPER_CONFIGS
-        .iter()
-        .find(|(name, _)| *name == cmd)
-        .map(|(_, help_arg)| *help_arg)
+/// Windows wrapper configs: (name, help_arg)
+#[allow(clippy::redundant_static_lifetimes)]
+pub const WINDOWS_WRAPPERS: &[(&'static str, &'static str)] = &[
+    ("curl", "--help"),
+    ("git", "--help"),
+    ("docker", "--help"),
+    ("tar", "--help"),
+    ("find", "/?"),
+    ("ffmpeg", "-help"),
+];
+
+/// Get the appropriate wrapper configs for current shell
+pub fn get_wrapper_configs() -> &'static [(&'static str, &'static str)] {
+    if is_windows_shell() {
+        WINDOWS_WRAPPERS
+    } else {
+        UNIX_WRAPPERS
+    }
 }
 
-/// Check if command has a known wrapper
+/// Get help_arg for a command
+pub fn get_help_arg(name: &str) -> Option<&'static str> {
+    let configs = get_wrapper_configs();
+    configs
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, help)| *help)
+}
+
+/// Check if command has a known wrapper on current platform
 pub fn is_known_wrapper(cmd: &str) -> bool {
-    WRAPPER_CONFIGS.iter().any(|(name, _)| *name == cmd)
+    get_wrapper_configs().iter().any(|(name, _)| *name == cmd)
 }
 
 /// Get AI prompt extension for a wrapper
-pub fn ai_prompt_extension(name: &str, help_arg: &str) -> Option<String> {
+pub fn ai_prompt_extension(name: &str) -> Option<String> {
+    let help_arg = get_help_arg(name)?;
     let help_text = std::process::Command::new(name)
         .arg(help_arg)
         .output()
@@ -53,16 +89,27 @@ mod tests {
     }
 
     #[test]
-    fn test_find_wrapper() {
-        assert_eq!(find_wrapper("curl"), Some("--help"));
-        assert_eq!(find_wrapper("ffmpeg"), Some("-help"));
-        assert_eq!(find_wrapper("unknown"), None);
+    fn test_get_help_arg() {
+        // On Unix (this test environment), should return Unix help args
+        if !is_windows_shell() {
+            assert_eq!(get_help_arg("curl"), Some("--help"));
+            assert_eq!(get_help_arg("ffmpeg"), Some("-help"));
+            assert_eq!(get_help_arg("find"), Some("--help"));
+        }
+        assert_eq!(get_help_arg("unknown"), None);
     }
 
     #[test]
     fn test_ai_prompt_extension_format() {
-        if let Some(prompt) = ai_prompt_extension("curl", "--help") {
+        if let Some(prompt) = ai_prompt_extension("curl") {
             assert!(prompt.contains("targets the `curl` command"));
         }
+    }
+
+    #[test]
+    fn test_windows_shell_detection() {
+        // On this Unix test environment, should return false
+        #[cfg(not(windows))]
+        assert!(!is_windows_shell());
     }
 }
