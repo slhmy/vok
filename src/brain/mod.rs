@@ -12,6 +12,16 @@ pub struct BrainResponse {
     pub confidence: f32,
 }
 
+/// Structured response for failure analysis and self-healing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HealResponse {
+    pub program: String,
+    pub args: Vec<String>,
+    pub explanation: String,
+    pub confidence: f32,
+    pub recoverable: bool,
+}
+
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
@@ -79,6 +89,103 @@ pub async fn review_command(
     .map_err(|e| format!("failed to serialize review input: {e}"))?;
 
     run_chat_completion(config, prompt::review_prompt(), review_input).await
+}
+
+/// Analyze a failed command and suggest a fix if recoverable.
+pub async fn analyze_failure(
+    config: &V0kConfig,
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+) -> Result<HealResponse, String> {
+    #[derive(Serialize)]
+    struct FailureInput<'a> {
+        command: &'a str,
+        stdout: &'a str,
+        stderr: &'a str,
+        exit_code: i32,
+    }
+
+    let input = serde_json::to_string(&FailureInput {
+        command,
+        stdout,
+        stderr,
+        exit_code,
+    })
+    .map_err(|e| format!("failed to serialize failure input: {e}"))?;
+
+    run_heal_completion(config, input).await
+}
+
+async fn run_heal_completion(
+    config: &V0kConfig,
+    user_input: String,
+) -> Result<HealResponse, String> {
+    let api_key = config.api_key.as_ref().ok_or("no API key configured")?;
+
+    let url = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
+
+    let request = ChatRequest {
+        model: config.model.clone(),
+        messages: vec![
+            Message {
+                role: "system".to_string(),
+                content: prompt::heal_prompt(),
+            },
+            Message {
+                role: "user".to_string(),
+                content: user_input,
+            },
+        ],
+        temperature: 0.1,
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent(format!("v0k/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("failed to create HTTP client: {e}"))?;
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("API error ({status}): {body}"));
+    }
+
+    let chat_resp: ChatResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse API response: {e}"))?;
+
+    let content = chat_resp
+        .choices
+        .first()
+        .ok_or("API returned no choices")?
+        .message
+        .content
+        .clone();
+
+    parse_heal_response(&content)
+}
+
+fn parse_heal_response(content: &str) -> Result<HealResponse, String> {
+    let json_str = if let Some(start) = content.find('{') {
+        let end = content.rfind('}').unwrap_or(content.len() - 1);
+        &content[start..=end]
+    } else {
+        content
+    };
+
+    serde_json::from_str::<HealResponse>(json_str)
+        .map_err(|e| format!("failed to parse heal output as JSON: {e}\nRaw output: {content}"))
 }
 
 async fn run_chat_completion(

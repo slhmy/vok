@@ -92,7 +92,7 @@ async fn handle_wrapper(config: &V0kConfig, name: &str, args: Vec<String>) -> Re
     let user_input = format!("{} {}", name, args.join(" "));
     let extension = wrappers::ai_prompt_extension(name);
     let brain_resp = brain::infer_with_extension(config, &user_input, extension).await?;
-    execute_brain_response(brain_resp).await
+    execute_brain_response(config, brain_resp).await
 }
 
 /// Handle `v0k ask ...` — pure natural language, always uses AI.
@@ -212,7 +212,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
     let original = prepared_command(program.clone(), args.clone());
 
     if !config.has_ai() {
-        return executor::execute(original).await;
+        return execute_with_healing(config, original).await;
     }
 
     let program_exists = which::which(&program).is_ok();
@@ -221,7 +221,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
         Ok(review) => review,
         Err(err) => {
             eprintln!("warning: AI review failed: {err}");
-            return executor::execute(original).await;
+            return execute_with_healing(config, original).await;
         }
     };
 
@@ -250,7 +250,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
                 .to_string(),
         )?;
         if use_rewrite {
-            return executor::execute(rewritten).await;
+            return execute_with_healing(config, rewritten).await;
         }
 
         if which::which(&original.program).is_err() {
@@ -275,7 +275,7 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
             }
         }
 
-        return executor::execute(original).await;
+        return execute_with_healing(config, original).await;
     }
 
     let needs_confirm = review.confidence < 0.85 || is_dangerous(&original.program, &original.args);
@@ -299,11 +299,91 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
         }
     }
 
-    executor::execute(original).await
+    execute_with_healing(config, original).await
+}
+
+/// Execute a command with self-healing on failure.
+const MAX_HEAL_ATTEMPTS: u32 = 3;
+
+async fn execute_with_healing(config: &V0kConfig, cmd: PreparedCommand) -> Result<(), String> {
+    let mut current_cmd = cmd;
+    let mut attempts = 0;
+
+    loop {
+        // First try: normal execution (preserve interactive support)
+        let first_try = executor::execute(current_cmd.clone()).await;
+
+        if first_try.is_ok() {
+            return Ok(());
+        }
+
+        // Command failed - check if we should try healing
+        attempts += 1;
+        if attempts >= MAX_HEAL_ATTEMPTS {
+            return first_try;
+        }
+
+        if !config.has_ai() {
+            return first_try;
+        }
+
+        // Re-run with capture to get error details
+        eprintln!("{}", "Command failed, analyzing...".yellow());
+        let captured = executor::execute_captured(current_cmd.clone()).await;
+
+        // Analyze failure
+        let heal = match brain::analyze_failure(
+            config,
+            &current_cmd.display,
+            &captured.stdout,
+            &captured.stderr,
+            captured.exit_code,
+        )
+        .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("warning: AI healing failed: {e}");
+                return Err(format!(
+                    "`{}` failed with code {}",
+                    current_cmd.display, captured.exit_code
+                ));
+            }
+        };
+
+        if !heal.recoverable {
+            return Err(format!(
+                "`{}` failed: {}",
+                current_cmd.display, heal.explanation
+            ));
+        }
+
+        // Show suggestion and prompt
+        eprintln!("{}", heal.explanation.green());
+        eprintln!("{}", format!("Failed: {}", current_cmd.display).red());
+        let fixed_cmd = prepared_command(heal.program.clone(), heal.args.clone());
+        eprintln!("{}", format!("Suggested fix: {}", fixed_cmd.display).blue());
+
+        if heal.confidence < 0.7 {
+            eprintln!(
+                "{}",
+                format!("Confidence: {:.0}%", heal.confidence * 100.0).yellow()
+            );
+        }
+
+        if !confirm("Try the suggested fix? [y/N] ")? {
+            return Err("user declined fix".into());
+        }
+
+        current_cmd = fixed_cmd;
+    }
 }
 
 /// Execute a BrainResponse with confirmation when confidence is low or command is dangerous.
-async fn execute_brain_response(resp: brain::BrainResponse) -> Result<(), String> {
+async fn execute_brain_response(
+    config: &V0kConfig,
+    resp: brain::BrainResponse,
+) -> Result<(), String> {
     let cmd = prepared_command(resp.program.clone(), resp.args.clone());
 
     let needs_confirm = resp.confidence < 0.85 || is_dangerous(&resp.program, &resp.args);
@@ -330,7 +410,7 @@ async fn execute_brain_response(resp: brain::BrainResponse) -> Result<(), String
         eprintln!("{}", format!("$ {}", cmd.display).blue());
     }
 
-    executor::execute(cmd).await
+    execute_with_healing(config, cmd).await
 }
 
 /// Check if a command looks dangerous.

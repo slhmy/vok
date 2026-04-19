@@ -2,10 +2,20 @@ use std::process::Stdio;
 use tokio::process::Command;
 
 /// A prepared command ready for execution.
+#[derive(Clone)]
 pub struct PreparedCommand {
     pub program: String,
     pub args: Vec<String>,
     pub display: String,
+}
+
+/// Result of a captured execution for failure analysis.
+#[allow(dead_code)]
+pub struct ExecutionResult {
+    pub success: bool,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// Execute a prepared command, printing the resolved invocation and streaming output.
@@ -36,4 +46,30 @@ pub async fn execute(cmd: PreparedCommand) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Execute a command with output capture (for failure analysis).
+pub async fn execute_captured(cmd: PreparedCommand) -> ExecutionResult {
+    let (shell, arg) = if cfg!(target_os = "windows") {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
+
+    let output = Command::new(shell).arg(arg).arg(&cmd.display).output();
+
+    match output.await {
+        Ok(o) => ExecutionResult {
+            success: o.status.success(),
+            exit_code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+        },
+        Err(e) => ExecutionResult {
+            success: false,
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: format!("failed to spawn: {}", e),
+        },
+    }
 }
