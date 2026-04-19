@@ -54,6 +54,9 @@ fn start_mock_ai_server(response_body: &str) -> (String, thread::JoinHandle<()>)
             .expect("failed to write mock response");
     });
 
+    // Small delay to ensure server is ready to accept connections
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
     (format!("http://{addr}/v1"), handle)
 }
 
