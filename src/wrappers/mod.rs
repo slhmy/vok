@@ -1,14 +1,21 @@
 /// Detect if running on Windows shell environment
 pub fn is_windows_shell() -> bool {
-    // PowerShell sets PSModulePath
-    if std::env::var("PSModulePath").is_ok() {
-        return true;
+    // First check if we're actually on Windows OS
+    #[cfg(not(windows))]
+    return false;
+
+    #[cfg(windows)]
+    {
+        // PowerShell sets PSModulePath
+        if std::env::var("PSModulePath").is_ok() {
+            return true;
+        }
+        // cmd.exe sets COMSPEC
+        if std::env::var("COMSPEC").is_ok() {
+            return true;
+        }
+        false
     }
-    // cmd.exe sets COMSPEC
-    if std::env::var("COMSPEC").is_ok() {
-        return true;
-    }
-    false
 }
 
 /// Unix wrapper configs: (name, help_arg)
@@ -91,7 +98,8 @@ mod tests {
     #[test]
     fn test_get_help_arg() {
         // On Unix (this test environment), should return Unix help args
-        if !is_windows_shell() {
+        #[cfg(not(windows))]
+        {
             assert_eq!(get_help_arg("curl"), Some("--help"));
             assert_eq!(get_help_arg("ffmpeg"), Some("-help"));
             assert_eq!(get_help_arg("find"), Some("--help"));
@@ -104,12 +112,5 @@ mod tests {
         if let Some(prompt) = ai_prompt_extension("curl") {
             assert!(prompt.contains("targets the `curl` command"));
         }
-    }
-
-    #[test]
-    fn test_windows_shell_detection() {
-        // On this Unix test environment, should return false
-        #[cfg(not(windows))]
-        assert!(!is_windows_shell());
     }
 }
