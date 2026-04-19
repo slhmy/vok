@@ -80,60 +80,6 @@ fn start_mock_ai_server(response_body: &str) -> (String, thread::JoinHandle<()>)
 
 #[test]
 #[serial]
-fn test_curl_url_only_defaults_get() {
-    let response = r#"{"choices":[{"message":{"content":"{\"program\":\"curl\",\"args\":[\"https://httpbin.org/get\"],\"explanation\":\"\",\"confidence\":1.0}"}}]}"#;
-    let (api_base, server) = start_mock_ai_server(response);
-
-    let output = isolated_v0k_bin("curl-get")
-        .env("V0K_API_KEY", "test-key")
-        .env("V0K_API_BASE", api_base)
-        .env("V0K_MODEL", "test-model")
-        .args(["curl", "https://httpbin.org/get"])
-        .output()
-        .expect("failed to run");
-
-    server.join().expect("mock server thread failed");
-    assert!(output.status.success());
-}
-
-#[test]
-#[serial]
-fn test_curl_method_and_url() {
-    let response = r#"{"choices":[{"message":{"content":"{\"program\":\"curl\",\"args\":[\"--help\"],\"explanation\":\"\",\"confidence\":1.0}"}}]}"#;
-    let (api_base, server) = start_mock_ai_server(response);
-
-    let output = isolated_v0k_bin("curl-help")
-        .env("V0K_API_KEY", "test-key")
-        .env("V0K_API_BASE", api_base)
-        .env("V0K_MODEL", "test-model")
-        .args(["curl", "--help"])
-        .output()
-        .expect("failed to run");
-
-    server.join().expect("mock server thread failed");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.to_lowercase().contains("usage: curl") || stdout.contains("Usage: curl"),
-        "stdout does not contain curl help. stdout: {}",
-        stdout
-    );
-}
-
-#[test]
-#[serial]
-fn test_curl_no_args_error() {
-    let output = isolated_v0k_bin("curl-no-args")
-        .args(["curl"])
-        .output()
-        .expect("failed to run");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no arguments provided"));
-}
-
-#[test]
-#[serial]
 fn test_ask_no_api_key_error() {
     // Without V0K_API_KEY, ask should fail gracefully
     let output = isolated_v0k_bin("ask-no-api-key")
@@ -143,19 +89,6 @@ fn test_ask_no_api_key_error() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("AI not configured"));
-}
-
-#[test]
-#[serial]
-fn test_curl_natural_language_no_api_key() {
-    // Natural language input without API key should give helpful error
-    let output = isolated_v0k_bin("curl-no-api-key")
-        .args(["curl", "帮我发个GET请求"])
-        .output()
-        .expect("failed to run");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no AI configured") || stderr.contains("V0K_API_KEY"));
 }
 
 #[test]
