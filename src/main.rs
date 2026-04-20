@@ -339,8 +339,11 @@ async fn execute_with_healing(
         if is_shell_builtin(&current_cmd.program) {
             eprintln!(
                 "{}",
-                format!("`{}` is a shell builtin — run it directly:", current_cmd.program)
-                    .yellow()
+                format!(
+                    "`{}` is a shell builtin — run it directly:",
+                    current_cmd.program
+                )
+                .yellow()
             );
             eprintln!("{}", format!("  {}", current_cmd.display).blue());
             return Err(format!("`{}` is a shell builtin", current_cmd.program));
