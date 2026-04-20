@@ -215,6 +215,20 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
     let shell_type = detect_shell_type();
     let original = prepared_command(program.clone(), args.clone());
 
+    // Check for shell builtins before any AI processing
+    if is_shell_builtin(&original.program) {
+        eprintln!(
+            "{}",
+            format!(
+                "`{}` is a shell builtin — run it directly:",
+                original.program
+            )
+            .yellow()
+        );
+        eprintln!("{}", format!("  {}", original.display).blue());
+        return Err(format!("`{}` is a shell builtin", original.program));
+    }
+
     if !config.has_ai() {
         return execute_with_healing(config, original, shell_type).await;
     }
@@ -430,6 +444,16 @@ async fn execute_brain_response(
 ) -> Result<(), String> {
     let shell_type = detect_shell_type();
     let cmd = prepared_command(resp.program.clone(), resp.args.clone());
+
+    // Check for shell builtins before showing confirmation
+    if is_shell_builtin(&cmd.program) {
+        eprintln!(
+            "{}",
+            format!("`{}` is a shell builtin — run it directly:", cmd.program).yellow()
+        );
+        eprintln!("{}", format!("  {}", cmd.display).blue());
+        return Err(format!("`{}` is a shell builtin", cmd.program));
+    }
 
     let needs_confirm = resp.confidence < 0.85 || is_dangerous(&resp.program, &resp.args);
 
