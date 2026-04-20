@@ -215,6 +215,20 @@ async fn handle_external_command(config: &V0kConfig, raw_args: Vec<String>) -> R
     let shell_type = detect_shell_type();
     let original = prepared_command(program.clone(), args.clone());
 
+    // Check for shell builtins before any AI processing
+    if is_shell_builtin(&original.program) {
+        eprintln!(
+            "{}",
+            format!(
+                "`{}` is a shell builtin — run it directly:",
+                original.program
+            )
+            .yellow()
+        );
+        eprintln!("{}", format!("  {}", original.display).blue());
+        return Err(format!("`{}` is a shell builtin", original.program));
+    }
+
     if !config.has_ai() {
         return execute_with_healing(config, original, shell_type).await;
     }
@@ -335,6 +349,20 @@ async fn execute_with_healing(
     let mut attempts = 0;
 
     loop {
+        // Check for shell builtins before each execution attempt
+        if is_shell_builtin(&current_cmd.program) {
+            eprintln!(
+                "{}",
+                format!(
+                    "`{}` is a shell builtin — run it directly:",
+                    current_cmd.program
+                )
+                .yellow()
+            );
+            eprintln!("{}", format!("  {}", current_cmd.display).blue());
+            return Err(format!("`{}` is a shell builtin", current_cmd.program));
+        }
+
         // First try: normal execution (preserve interactive support)
         let first_try = executor::execute(current_cmd.clone()).await;
 
@@ -417,6 +445,16 @@ async fn execute_brain_response(
     let shell_type = detect_shell_type();
     let cmd = prepared_command(resp.program.clone(), resp.args.clone());
 
+    // Check for shell builtins before showing confirmation
+    if is_shell_builtin(&cmd.program) {
+        eprintln!(
+            "{}",
+            format!("`{}` is a shell builtin — run it directly:", cmd.program).yellow()
+        );
+        eprintln!("{}", format!("  {}", cmd.display).blue());
+        return Err(format!("`{}` is a shell builtin", cmd.program));
+    }
+
     let needs_confirm = resp.confidence < 0.85 || is_dangerous(&resp.program, &resp.args);
 
     if needs_confirm {
@@ -453,6 +491,24 @@ fn is_dangerous(program: &str, args: &[String]) -> bool {
     let dangerous_programs = ["rm", "shutdown", "reboot"];
 
     dangerous_programs.contains(&program) || dangerous_patterns.iter().any(|p| joined.contains(p))
+}
+
+/// Shell builtins that cannot be executed via subprocess.
+/// These commands affect the parent shell's state and won't work when spawned.
+const SHELL_BUILTINS: &[&str] = &[
+    "cd", "pushd", "popd", "dirs", // directory navigation
+    "export", "unset", "set", "declare", // environment/shell variables
+    "source", ".", // script execution in current shell
+    "alias", "unalias", // aliases
+    "eval", "exec", // shell evaluation
+    "history", "fc", // history management
+    "jobs", "fg", "bg", "wait", // job control
+    "exit", "return", "break", "continue", // flow control
+];
+
+/// Check if a command is a shell builtin that cannot work via subprocess.
+fn is_shell_builtin(program: &str) -> bool {
+    SHELL_BUILTINS.contains(&program)
 }
 
 /// Join args for display, quoting those with spaces.
@@ -540,5 +596,16 @@ mod tests {
     #[test]
     fn test_shell_join_escapes_control_characters() {
         assert_eq!(shell_join(&["hello\n".into()]), "\"hello\\n\"");
+    }
+
+    #[test]
+    fn test_is_shell_builtin() {
+        assert!(is_shell_builtin("cd"));
+        assert!(is_shell_builtin("export"));
+        assert!(is_shell_builtin("source"));
+        assert!(is_shell_builtin("alias"));
+        assert!(!is_shell_builtin("ls"));
+        assert!(!is_shell_builtin("git"));
+        assert!(!is_shell_builtin("curl"));
     }
 }
