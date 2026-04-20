@@ -333,13 +333,12 @@ async fn execute_with_healing(
 ) -> Result<(), String> {
     // Check for shell builtins before execution
     if is_shell_builtin(&cmd.program) {
-        eprintln!("{}", format!("`{}` is a shell builtin and cannot be executed by v0k.", cmd.program).red());
-        eprintln!("{}", "Shell builtins modify the current shell's state and only work".yellow());
-        eprintln!("{}", "when run directly in your shell, not in a subprocess.".yellow());
-        eprintln!();
-        eprintln!("{}", "To use this command, run it directly:".green());
+        eprintln!(
+            "{}",
+            format!("`{}` is a shell builtin — run it directly:", cmd.program).yellow()
+        );
         eprintln!("{}", format!("  {}", cmd.display).blue());
-        return Err(format!("`{}` is a shell builtin — run it directly in your shell", cmd.program));
+        return Err(format!("`{}` is a shell builtin", cmd.program));
     }
 
     let mut current_cmd = cmd;
