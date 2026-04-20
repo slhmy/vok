@@ -331,6 +331,17 @@ async fn execute_with_healing(
     cmd: PreparedCommand,
     shell_type: ShellType,
 ) -> Result<(), String> {
+    // Check for shell builtins before execution
+    if is_shell_builtin(&cmd.program) {
+        eprintln!("{}", format!("`{}` is a shell builtin and cannot be executed by v0k.", cmd.program).red());
+        eprintln!("{}", "Shell builtins modify the current shell's state and only work".yellow());
+        eprintln!("{}", "when run directly in your shell, not in a subprocess.".yellow());
+        eprintln!();
+        eprintln!("{}", "To use this command, run it directly:".green());
+        eprintln!("{}", format!("  {}", cmd.display).blue());
+        return Err(format!("`{}` is a shell builtin — run it directly in your shell", cmd.program));
+    }
+
     let mut current_cmd = cmd;
     let mut attempts = 0;
 
@@ -455,6 +466,24 @@ fn is_dangerous(program: &str, args: &[String]) -> bool {
     dangerous_programs.contains(&program) || dangerous_patterns.iter().any(|p| joined.contains(p))
 }
 
+/// Shell builtins that cannot be executed via subprocess.
+/// These commands affect the parent shell's state and won't work when spawned.
+const SHELL_BUILTINS: &[&str] = &[
+    "cd", "pushd", "popd", "dirs", // directory navigation
+    "export", "unset", "set", "declare", // environment/shell variables
+    "source", ".", // script execution in current shell
+    "alias", "unalias", // aliases
+    "eval", "exec", // shell evaluation
+    "history", "fc", // history management
+    "jobs", "fg", "bg", "wait", // job control
+    "exit", "return", "break", "continue", // flow control
+];
+
+/// Check if a command is a shell builtin that cannot work via subprocess.
+fn is_shell_builtin(program: &str) -> bool {
+    SHELL_BUILTINS.contains(&program)
+}
+
 /// Join args for display, quoting those with spaces.
 fn shell_join(args: &[String]) -> String {
     args.iter()
@@ -540,5 +569,16 @@ mod tests {
     #[test]
     fn test_shell_join_escapes_control_characters() {
         assert_eq!(shell_join(&["hello\n".into()]), "\"hello\\n\"");
+    }
+
+    #[test]
+    fn test_is_shell_builtin() {
+        assert!(is_shell_builtin("cd"));
+        assert!(is_shell_builtin("export"));
+        assert!(is_shell_builtin("source"));
+        assert!(is_shell_builtin("alias"));
+        assert!(!is_shell_builtin("ls"));
+        assert!(!is_shell_builtin("git"));
+        assert!(!is_shell_builtin("curl"));
     }
 }
