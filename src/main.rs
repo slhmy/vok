@@ -4,10 +4,11 @@ mod executor;
 mod parser;
 mod wrappers;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use config::V0kConfig;
 use executor::PreparedCommand;
+use serde::Serialize;
 use std::env;
 use std::io::{self, Write};
 use wrappers::{detect_shell_type, ShellType};
@@ -30,8 +31,29 @@ enum Commands {
         /// Natural language query
         query: Vec<String>,
     },
+    /// Fix and optionally execute the previous failed command
+    Fix(FixArgs),
     /// Interactive setup for v0k configuration
     Setup,
+}
+
+#[derive(Args)]
+struct FixArgs {
+    /// Failed command to analyze (provided by shell integration)
+    #[arg(long)]
+    command: Option<String>,
+    /// Exit code from the failed command
+    #[arg(long, default_value_t = 1)]
+    exit_code: i32,
+    /// Show the suggested fix without executing it
+    #[arg(long)]
+    dry_run: bool,
+    /// Show extra context about the suggestion
+    #[arg(long)]
+    explain: bool,
+    /// Emit the suggestion as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[tokio::main]
@@ -44,6 +66,7 @@ async fn main() {
 
         match cli.command {
             Commands::Ask { query } => handle_ask(&config, query).await,
+            Commands::Fix(args) => handle_fix(&config, args).await,
             Commands::Setup => handle_setup().await,
         }
     } else if let Some((program, args)) = raw_args.split_first() {
@@ -167,6 +190,150 @@ async fn handle_setup() -> Result<(), String> {
     config::V0kConfig::save_file(&new_cfg).map_err(|e| format!("Failed to save config: {e}"))?;
     println!("Configuration saved successfully to ~/.v0k/config.toml");
     Ok(())
+}
+
+async fn handle_fix(config: &V0kConfig, args: FixArgs) -> Result<(), String> {
+    let command = args
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|cmd| !cmd.is_empty())
+        .ok_or_else(fix_integration_hint)?;
+
+    if args.exit_code == 0 {
+        return Err("previous command exited successfully; nothing to fix".into());
+    }
+
+    if !config.has_ai() {
+        return Err(
+            "AI not configured. Set V0K_API_KEY or add api_key to ~/.v0k/config.toml".into(),
+        );
+    }
+
+    let shell_type = detect_shell_type();
+    let wrapper_hint = first_command_word(command)
+        .filter(|program| wrappers::is_known_wrapper(program))
+        .and_then(wrappers::ai_prompt_extension);
+
+    let heal = brain::analyze_failure_for_shell(
+        config,
+        command,
+        "",
+        "",
+        args.exit_code,
+        wrapper_hint.as_deref(),
+        shell_type,
+    )
+    .await?;
+
+    let fixed_cmd = prepared_command(heal.program.clone(), heal.args.clone());
+    let will_execute = heal.recoverable
+        && !args.dry_run
+        && heal.confidence >= 0.7
+        && !is_dangerous(&heal.program, &heal.args);
+
+    if args.json {
+        let output = FixOutput {
+            original_command: command,
+            exit_code: args.exit_code,
+            recoverable: heal.recoverable,
+            suggested_command: heal.recoverable.then(|| fixed_cmd.display.clone()),
+            explanation: &heal.explanation,
+            confidence: heal.confidence,
+            will_execute,
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .map_err(|e| format!("failed to serialize fix output: {e}"))?
+        );
+    } else {
+        eprintln!("{}", heal.explanation.green());
+        if heal.recoverable {
+            eprintln!("{}", format!("Failed: {command}").red());
+            eprintln!("{}", format!("Suggested fix: {}", fixed_cmd.display).blue());
+        }
+        if args.explain || heal.confidence < 0.7 {
+            eprintln!(
+                "{}",
+                format!(
+                    "Exit code: {}; confidence: {:.0}%",
+                    args.exit_code,
+                    heal.confidence * 100.0
+                )
+                .yellow()
+            );
+        }
+    }
+
+    if !heal.recoverable {
+        return Err(format!(
+            "failed command is not recoverable: {}",
+            heal.explanation
+        ));
+    }
+
+    if args.dry_run {
+        return Ok(());
+    }
+
+    if is_shell_builtin(&fixed_cmd.program) {
+        eprintln!(
+            "{}",
+            format!(
+                "`{}` is a shell builtin — run it directly:",
+                fixed_cmd.program
+            )
+            .yellow()
+        );
+        eprintln!("{}", format!("  {}", fixed_cmd.display).blue());
+        return Err(format!("`{}` is a shell builtin", fixed_cmd.program));
+    }
+
+    let needs_confirm = heal.confidence < 0.7 || is_dangerous(&fixed_cmd.program, &fixed_cmd.args);
+    if needs_confirm {
+        if is_dangerous(&fixed_cmd.program, &fixed_cmd.args) {
+            eprintln!("{}", "The suggested command may be destructive!".red());
+        }
+        if !confirm("Run the suggested fix? [y/N] ")? {
+            return Err("user declined fix".into());
+        }
+    } else if !args.json {
+        eprintln!("{}", format!("$ {}", fixed_cmd.display).blue());
+    }
+
+    execute_with_healing(config, fixed_cmd, shell_type).await
+}
+
+#[derive(Serialize)]
+struct FixOutput<'a> {
+    original_command: &'a str,
+    exit_code: i32,
+    recoverable: bool,
+    suggested_command: Option<String>,
+    explanation: &'a str,
+    confidence: f32,
+    will_execute: bool,
+}
+
+fn fix_integration_hint() -> String {
+    r#"missing failed command. Pass --command manually or install the bash/zsh integration:
+
+v0k() {
+  local exit_code=$?
+  if [ "$1" = "fix" ]; then
+    local last_cmd
+    last_cmd="$(fc -ln -1)"
+    command v0k fix --command "$last_cmd" --exit-code "$exit_code" "${@:2}"
+  else
+    command v0k "$@"
+  fi
+}"#
+    .to_string()
+}
+
+fn first_command_word(command: &str) -> Option<&str> {
+    command.split_whitespace().next()
 }
 
 fn prompt(label: &str, default: &str) -> std::io::Result<String> {
@@ -553,7 +720,7 @@ fn should_use_clap_dispatch(raw_args: &[String]) -> bool {
 }
 
 fn is_builtin_command(command: &str) -> bool {
-    matches!(command, "ts" | "b64" | "ask" | "setup")
+    matches!(command, "ts" | "b64" | "ask" | "fix" | "setup")
 }
 
 fn command_changed(original: &PreparedCommand, reviewed: &PreparedCommand) -> bool {

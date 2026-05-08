@@ -15,7 +15,7 @@ pub struct BrainResponse {
 }
 
 /// Structured response for failure analysis and self-healing.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HealResponse {
     pub program: String,
     pub args: Vec<String>,
