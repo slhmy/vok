@@ -192,6 +192,8 @@ async fn handle_setup() -> Result<(), String> {
     Ok(())
 }
 
+const FIX_AUTO_EXEC_CONFIDENCE: f32 = 0.7;
+
 async fn handle_fix(config: &V0kConfig, args: FixArgs) -> Result<(), String> {
     let command = args
         .command
@@ -229,7 +231,7 @@ async fn handle_fix(config: &V0kConfig, args: FixArgs) -> Result<(), String> {
     let fixed_cmd = prepared_command(heal.program.clone(), heal.args.clone());
     let will_execute = heal.recoverable
         && !args.dry_run
-        && heal.confidence >= 0.7
+        && heal.confidence >= FIX_AUTO_EXEC_CONFIDENCE
         && !is_dangerous(&heal.program, &heal.args);
 
     if args.json {
@@ -253,7 +255,7 @@ async fn handle_fix(config: &V0kConfig, args: FixArgs) -> Result<(), String> {
             eprintln!("{}", format!("Failed: {command}").red());
             eprintln!("{}", format!("Suggested fix: {}", fixed_cmd.display).blue());
         }
-        if args.explain || heal.confidence < 0.7 {
+        if args.explain || heal.confidence < FIX_AUTO_EXEC_CONFIDENCE {
             eprintln!(
                 "{}",
                 format!(
@@ -290,7 +292,8 @@ async fn handle_fix(config: &V0kConfig, args: FixArgs) -> Result<(), String> {
         return Err(format!("`{}` is a shell builtin", fixed_cmd.program));
     }
 
-    let needs_confirm = heal.confidence < 0.7 || is_dangerous(&fixed_cmd.program, &fixed_cmd.args);
+    let needs_confirm = heal.confidence < FIX_AUTO_EXEC_CONFIDENCE
+        || is_dangerous(&fixed_cmd.program, &fixed_cmd.args);
     if needs_confirm {
         if is_dangerous(&fixed_cmd.program, &fixed_cmd.args) {
             eprintln!("{}", "The suggested command may be destructive!".red());
@@ -332,6 +335,7 @@ v0k() {
     .to_string()
 }
 
+/// Extract the leading program word from a failed command string for wrapper hints.
 fn first_command_word(command: &str) -> Option<&str> {
     command.split_whitespace().next()
 }
