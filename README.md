@@ -73,3 +73,33 @@ v0k ask "How to use ffmpeg to convert a video to mp4 format?"
 ```
 
 v0k will return the instruction and the complete command.
+
+### Fix the Previous Failed Command
+
+Use `v0k fix` to ask v0k to repair the last failed command and run the suggested fix:
+
+```bash
+gti status
+v0k fix --command "gti status" --exit-code 127
+```
+
+Add this optional bash/zsh function to `~/.bashrc` or `~/.zshrc` so `v0k fix` can capture the previous command automatically:
+
+```bash
+v0k() {
+  local exit_code=$?
+  if [ "$1" = "fix" ]; then
+    local last_cmd
+    last_cmd="$(fc -ln -1)"
+    command v0k fix --command "$last_cmd" --exit-code "$exit_code" "${@:2}"
+  else
+    command v0k "$@"
+  fi
+}
+```
+
+Preview a fix without executing it:
+
+```bash
+v0k fix --dry-run
+```

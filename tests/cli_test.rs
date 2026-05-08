@@ -93,6 +93,54 @@ fn test_ask_no_api_key_error() {
 
 #[test]
 #[serial]
+fn test_fix_without_command_shows_integration_hint() {
+    let output = isolated_v0k_bin("fix-no-command")
+        .args(["fix"])
+        .output()
+        .expect("failed to run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("missing failed command"));
+    assert!(stderr.contains("command v0k fix --command \"$last_cmd\" --exit-code \"$exit_code\""));
+}
+
+#[test]
+#[serial]
+fn test_fix_dry_run_json_outputs_suggestion_without_executing() {
+    let response = r#"{"choices":[{"message":{"content":"{\"program\":\"git\",\"args\":[\"status\"],\"explanation\":\"The executable name was mistyped as gti; use git status instead.\",\"confidence\":0.96,\"recoverable\":true}"}}]}"#;
+    let (api_base, server) = start_mock_ai_server(response);
+
+    let output = isolated_v0k_bin("fix-dry-run-json")
+        .env("V0K_API_KEY", "test-key")
+        .env("V0K_API_BASE", api_base)
+        .env("V0K_MODEL", "test-model")
+        .args([
+            "fix",
+            "--command",
+            "gti status",
+            "--exit-code",
+            "127",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("failed to run");
+
+    server.join().expect("mock server thread failed");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("invalid JSON output");
+    assert_eq!(json["original_command"], "gti status");
+    assert_eq!(json["exit_code"], 127);
+    assert_eq!(json["recoverable"], true);
+    assert_eq!(json["suggested_command"], "git status");
+    assert_eq!(json["will_execute"], false);
+}
+
+#[test]
+#[serial]
 fn test_no_args_shows_help() {
     let output = v0k_bin().output().expect("failed to run");
     // clap exits with error when no subcommand is provided
