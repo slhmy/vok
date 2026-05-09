@@ -1,6 +1,6 @@
 {
   "name": "@v0k/cli",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Semantic-level intelligent CLI agent for developers",
   "license": "MIT",
   "scripts": {
