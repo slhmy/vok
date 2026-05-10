@@ -10,7 +10,9 @@ use config::V0kConfig;
 use executor::PreparedCommand;
 use serde::Serialize;
 use std::env;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use wrappers::{detect_shell_type, ShellType};
 
 #[derive(Parser)]
@@ -34,7 +36,16 @@ enum Commands {
     /// Fix and optionally execute the previous failed command
     Fix(FixArgs),
     /// Interactive setup for v0k configuration
-    Setup,
+    Setup {
+        #[command(subcommand)]
+        command: Option<SetupCommands>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Install shell alias/function integration for v0k fix
+    Alias,
 }
 
 #[derive(Args)]
@@ -67,7 +78,7 @@ async fn main() {
         match cli.command {
             Commands::Ask { query } => handle_ask(&config, query).await,
             Commands::Fix(args) => handle_fix(&config, args).await,
-            Commands::Setup => handle_setup().await,
+            Commands::Setup { command } => handle_setup(command).await,
         }
     } else if let Some((program, args)) = raw_args.split_first() {
         if let Some(res) = handle_any_wrapper(&config, program, args.to_vec()).await {
@@ -144,7 +155,11 @@ async fn handle_ask(config: &V0kConfig, query: Vec<String>) -> Result<(), String
     Ok(())
 }
 
-async fn handle_setup() -> Result<(), String> {
+async fn handle_setup(command: Option<SetupCommands>) -> Result<(), String> {
+    if let Some(SetupCommands::Alias) = command {
+        return install_shell_integration_with_message();
+    }
+
     let current_cfg = config::V0kConfig::load_file().unwrap_or_default();
 
     println!("Welcome to v0k setup! Press Enter to keep the current value.");
@@ -189,6 +204,8 @@ async fn handle_setup() -> Result<(), String> {
 
     config::V0kConfig::save_file(&new_cfg).map_err(|e| format!("Failed to save config: {e}"))?;
     println!("Configuration saved successfully to ~/.v0k/config.toml");
+
+    install_shell_integration_with_message()?;
     Ok(())
 }
 
@@ -320,9 +337,89 @@ struct FixOutput<'a> {
 }
 
 fn fix_integration_hint() -> String {
-    r#"missing failed command. Pass --command manually or install the bash/zsh integration:
+    format!(
+        "missing failed command. Pass --command manually or install the bash/zsh integration:\n\n{}",
+        v0k_shell_integration_function()
+    )
+}
 
-v0k() {
+#[derive(Clone, Copy)]
+enum ConfigurableShell {
+    Bash,
+    Zsh,
+}
+
+fn detect_configurable_shell(shell_env: Option<&str>) -> Option<ConfigurableShell> {
+    let shell = shell_env?
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    match shell.as_str() {
+        "bash" => Some(ConfigurableShell::Bash),
+        "zsh" => Some(ConfigurableShell::Zsh),
+        _ => None,
+    }
+}
+
+fn shell_rc_path(shell: ConfigurableShell, home: &Path) -> PathBuf {
+    let file = match shell {
+        ConfigurableShell::Bash => ".bashrc",
+        ConfigurableShell::Zsh => ".zshrc",
+    };
+    home.join(file)
+}
+
+fn install_shell_integration_with_message() -> Result<(), String> {
+    let shell = detect_configurable_shell(env::var("SHELL").ok().as_deref());
+    let Some(shell) = shell else {
+        println!("No configurable shell detected (bash/zsh). Skipping shell alias setup.");
+        return Ok(());
+    };
+
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let rc_path = shell_rc_path(shell, &home);
+
+    let written = ensure_shell_integration(&rc_path)
+        .map_err(|e| format!("Failed to update {}: {e}", rc_path.display()))?;
+
+    if written {
+        println!("Shell alias/function added to {}", rc_path.display());
+    } else {
+        println!(
+            "Shell alias/function already configured in {}",
+            rc_path.display()
+        );
+    }
+    println!("Run `source {}` or restart your shell.", rc_path.display());
+    Ok(())
+}
+
+fn ensure_shell_integration(rc_path: &Path) -> std::io::Result<bool> {
+    let existing = std::fs::read_to_string(rc_path).unwrap_or_default();
+    if existing.contains(SHELL_INTEGRATION_BEGIN)
+        || existing.contains(v0k_shell_integration_function())
+    {
+        return Ok(false);
+    }
+
+    let mut file = OpenOptions::new().create(true).append(true).open(rc_path)?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+
+    writeln!(file, "{SHELL_INTEGRATION_BEGIN}")?;
+    writeln!(file, "{}", v0k_shell_integration_function())?;
+    writeln!(file, "{SHELL_INTEGRATION_END}")?;
+    Ok(true)
+}
+
+const SHELL_INTEGRATION_BEGIN: &str = "# >>> v0k shell integration >>>";
+const SHELL_INTEGRATION_END: &str = "# <<< v0k shell integration <<<";
+
+fn v0k_shell_integration_function() -> &'static str {
+    r#"v0k() {
   local exit_code=$?
   if [ "$1" = "fix" ]; then
     local last_cmd
@@ -332,7 +429,6 @@ v0k() {
     command v0k "$@"
   fi
 }"#
-    .to_string()
 }
 
 /// Extract the leading program word from a failed command string for wrapper hints.
@@ -746,6 +842,7 @@ fn confirm(prompt: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_should_use_clap_dispatch_for_builtins() {
@@ -778,5 +875,40 @@ mod tests {
         assert!(!is_shell_builtin("ls"));
         assert!(!is_shell_builtin("git"));
         assert!(!is_shell_builtin("curl"));
+    }
+
+    #[test]
+    fn test_detect_configurable_shell() {
+        assert!(matches!(
+            detect_configurable_shell(Some("/bin/bash")),
+            Some(ConfigurableShell::Bash)
+        ));
+        assert!(matches!(
+            detect_configurable_shell(Some("/usr/bin/zsh")),
+            Some(ConfigurableShell::Zsh)
+        ));
+        assert!(detect_configurable_shell(Some("/bin/fish")).is_none());
+        assert!(detect_configurable_shell(None).is_none());
+    }
+
+    #[test]
+    fn test_ensure_shell_integration_is_idempotent() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("v0k-shell-integration-{unique}"));
+        std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+        let rc_path = dir.join(".bashrc");
+
+        let first_write = ensure_shell_integration(&rc_path).expect("first write failed");
+        let second_write = ensure_shell_integration(&rc_path).expect("second write failed");
+        let content = std::fs::read_to_string(&rc_path).expect("failed to read rc file");
+
+        assert!(first_write);
+        assert!(!second_write);
+        assert!(content.contains(SHELL_INTEGRATION_BEGIN));
+        assert!(content.contains(v0k_shell_integration_function()));
+        assert!(content.contains(SHELL_INTEGRATION_END));
     }
 }
