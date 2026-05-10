@@ -351,7 +351,7 @@ enum ConfigurableShell {
 
 fn detect_configurable_shell(shell_env: Option<&str>) -> Option<ConfigurableShell> {
     let shell = shell_env?
-        .rsplit(std::path::MAIN_SEPARATOR)
+        .rsplit('/')
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -398,7 +398,9 @@ fn install_shell_integration_with_message() -> Result<(), String> {
 
 fn ensure_shell_integration(rc_path: &Path) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(rc_path).unwrap_or_default();
-    if existing.contains(SHELL_INTEGRATION_BEGIN) || existing.contains(SHELL_INTEGRATION_MARKER) {
+    if existing.contains(SHELL_INTEGRATION_BEGIN)
+        || existing.contains(v0k_shell_integration_function())
+    {
         return Ok(false);
     }
 
@@ -415,8 +417,6 @@ fn ensure_shell_integration(rc_path: &Path) -> std::io::Result<bool> {
 
 const SHELL_INTEGRATION_BEGIN: &str = "# >>> v0k shell integration >>>";
 const SHELL_INTEGRATION_END: &str = "# <<< v0k shell integration <<<";
-const SHELL_INTEGRATION_MARKER: &str =
-    "command v0k fix --command \"$last_cmd\" --exit-code \"$exit_code\"";
 
 fn v0k_shell_integration_function() -> &'static str {
     r#"v0k() {
@@ -908,7 +908,7 @@ mod tests {
         assert!(first_write);
         assert!(!second_write);
         assert!(content.contains(SHELL_INTEGRATION_BEGIN));
-        assert!(content.contains(SHELL_INTEGRATION_MARKER));
+        assert!(content.contains(v0k_shell_integration_function()));
         assert!(content.contains(SHELL_INTEGRATION_END));
     }
 }
