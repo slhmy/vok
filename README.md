@@ -33,6 +33,13 @@ Run the setup command to configure your AI provider:
 v0k setup
 ```
 
+`v0k setup` will also try to append the `v0k` shell integration function to your `~/.bashrc` or `~/.zshrc` automatically.
+You can install just the shell integration anytime with:
+
+```bash
+v0k setup alias
+```
+
 > Fast models are recommended for better performance and cost efficiency.
 > You can override the default model in `~/.v0k/config.toml` or via the `V0K_MODEL` environment variable.
 
@@ -83,7 +90,7 @@ gti status
 v0k fix --command "gti status" --exit-code 127
 ```
 
-Add this optional bash/zsh function to `~/.bashrc` or `~/.zshrc` so `v0k fix` can capture the previous command automatically:
+`v0k setup` can install this automatically, but you can also add it manually to `~/.bashrc` or `~/.zshrc` so `v0k fix` can capture the previous command automatically:
 
 ```bash
 v0k() {
